@@ -23,7 +23,12 @@ def get_engine() -> HybridSearchEngine:
     db = Database(config.db_path)
     db.initialize()
     embedder = Embedder.create_mock_or_real()
-    return HybridSearchEngine(db, embedder)
+    vectors, chunk_ids = None, None
+    if config.vectors_path.exists():
+        from hyperindex.watcher import load_vectors_file
+
+        vectors, chunk_ids = load_vectors_file(config.vectors_path)
+    return HybridSearchEngine(db, embedder, vectors=vectors, chunk_ids=chunk_ids)
 
 
 @app.command()
@@ -110,17 +115,71 @@ def index(
     target_paths = [path] if path is not None else config.watch_paths
     typer.echo(f"Indexing paths: {', '.join(str(p) for p in target_paths)}...")
 
+    from hyperindex.watcher import IndexWatcher
+
+    db = Database(config.db_path)
+    db.initialize()
+    if force:
+        conn = db.get_connection()
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM chunks_fts;")
+                cursor.execute("DELETE FROM chunks;")
+                cursor.execute("DELETE FROM files;")
+        finally:
+            conn.close()
+        if config.vectors_path.exists():
+            try:
+                config.vectors_path.unlink()
+            except OSError:
+                pass
+
+    embedder = Embedder.create_mock_or_real()
+    watcher = IndexWatcher(
+        db=db,
+        embedder=embedder,
+        watch_paths=target_paths,
+        vectors_path=config.vectors_path,
+    )
+    total_indexed = 0
+    for p in target_paths:
+        target = Path(p)
+        if target.is_dir():
+            total_indexed += watcher.index_directory(target)
+        elif target.is_file():
+            if watcher.index_file(target):
+                total_indexed += 1
+    typer.echo(f"Indexing completed: {total_indexed} files processed.")
+
 
 @app.command()
 def watch(
     path: Optional[Path] = typer.Argument(
         None, help="Directory path to watch for real-time indexing"
     ),
+    continuous: bool = typer.Option(
+        True, "--continuous/--no-continuous", help="Run continuous watcher daemon loop"
+    ),
 ):
     """Start filesystem watcher daemon for automatic incremental indexing."""
     config = get_config()
     target_paths = [path] if path is not None else config.watch_paths
     typer.echo(f"Watching paths for changes: {', '.join(str(p) for p in target_paths)}...")
+
+    from hyperindex.watcher import IndexWatcher
+
+    db = Database(config.db_path)
+    db.initialize()
+    embedder = Embedder.create_mock_or_real()
+    watcher = IndexWatcher(
+        db=db,
+        embedder=embedder,
+        watch_paths=target_paths,
+        vectors_path=config.vectors_path,
+    )
+    if continuous:
+        watcher.run()
 
 
 if __name__ == "__main__":

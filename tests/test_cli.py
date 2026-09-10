@@ -189,9 +189,11 @@ def test_cli_index_and_watch_commands():
     assert res_watch_help.exit_code == 0
     assert "Start filesystem watcher daemon" in res_watch_help.stdout
 
-    res_watch = runner.invoke(app, ["watch", "/tmp/sample"])
-    assert res_watch.exit_code == 0
-    assert "Watching paths for changes: /tmp/sample" in res_watch.stdout
+    with patch("hyperindex.watcher.IndexWatcher.run") as mock_run:
+        res_watch = runner.invoke(app, ["watch", "/tmp/sample"])
+        assert res_watch.exit_code == 0
+        assert "Watching paths for changes: /tmp/sample" in res_watch.stdout
+        mock_run.assert_called_once()
 
 
 def test_get_editor_command_env():
