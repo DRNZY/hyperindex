@@ -460,3 +460,109 @@ def test_watcher_run_timeout_and_stop(tmp_path):
     elapsed = time.time() - start
     assert elapsed >= 0.25
     assert watcher._is_running is False
+
+
+def test_watcher_run_sigterm_clean_shutdown(tmp_path):
+    import signal
+    import threading
+
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db.initialize()
+    embedder = Embedder.create_mock_or_real(use_mock=True)
+
+    watcher = IndexWatcher(
+        db=db,
+        embedder=embedder,
+        watch_paths=[tmp_path],
+        debounce_delay=0.1,
+    )
+
+    # Trigger SIGTERM after 0.1s
+    def send_sigterm():
+        time.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    thread = threading.Thread(target=send_sigterm)
+    thread.start()
+
+    # run() catches SIGTERM via registered handler, stops, and exits cleanly
+    watcher.run(timeout=5.0)
+    thread.join()
+    assert watcher._is_running is False
+
+
+def test_atomic_vector_file_persistence(tmp_path):
+    vec_path = tmp_path / "vectors.bin"
+    data = np.random.randn(3, 384).astype(np.float32)
+    cids = [1, 2, 3]
+
+    with patch("os.replace", wraps=os.replace) as mock_replace:
+        save_vectors_file(vec_path, data, cids)
+        assert mock_replace.called
+        assert vec_path.exists()
+
+    loaded_data, loaded_cids = load_vectors_file(vec_path)
+    assert loaded_cids == cids
+    assert loaded_data.shape == (3, 384)
+
+
+def test_batch_io_optimization_calls_save_once(tmp_path):
+    db_path = tmp_path / "test.db"
+    vec_path = tmp_path / "vectors.bin"
+    db = Database(db_path)
+    db.initialize()
+    embedder = Embedder.create_mock_or_real(use_mock=True)
+
+    watcher = IndexWatcher(
+        db=db,
+        embedder=embedder,
+        watch_paths=[tmp_path],
+        vectors_path=vec_path,
+    )
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    for i in range(5):
+        (src_dir / f"mod_{i}.py").write_text(f"def func_{i}(): pass")
+
+    with patch("hyperindex.watcher.save_vectors_file", wraps=save_vectors_file) as mock_save:
+        count = watcher.index_directory(src_dir)
+        assert count == 5
+        # Must be called exactly ONCE at the end of the batch, not 5 times!
+        assert mock_save.call_count == 1
+
+
+def test_enqueue_directory_deletion_purges_children(tmp_path):
+    db = MagicMock()
+    embedder = MagicMock()
+    watcher = IndexWatcher(db=db, embedder=embedder, watch_paths=[tmp_path])
+
+    child_1 = tmp_path / "pkg" / "a.py"
+    child_2 = tmp_path / "pkg" / "sub" / "b.py"
+    sibling = tmp_path / "pkg_sibling" / "c.py"
+
+    watcher.enqueue_change(child_1)
+    watcher.enqueue_change(child_2)
+    watcher.enqueue_change(sibling)
+
+    assert child_1 in watcher._pending_changes
+    assert child_2 in watcher._pending_changes
+    assert sibling in watcher._pending_changes
+
+    watcher.enqueue_directory_deletion(tmp_path / "pkg")
+
+    # Children purged, sibling preserved
+    assert child_1 not in watcher._pending_changes
+    assert child_2 not in watcher._pending_changes
+    assert sibling in watcher._pending_changes
+
+
+def test_watch_paths_resolved(tmp_path):
+    db = MagicMock()
+    embedder = MagicMock()
+    # Pass relative path
+    rel_path = Path(".")
+    watcher = IndexWatcher(db=db, embedder=embedder, watch_paths=[rel_path])
+    assert watcher.watch_paths[0].is_absolute()
+

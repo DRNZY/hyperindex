@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import os
 from pathlib import Path
+import signal
 import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple, Union
@@ -249,7 +250,7 @@ def save_vectors_file(
     vectors: np.ndarray,
     chunk_ids: List[int],
 ) -> None:
-    """Persist dense float32 vector array and chunk ID lookup to binary file."""
+    """Persist dense float32 vector array and chunk ID lookup to binary file atomically."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     num_chunks = len(chunk_ids)
@@ -258,32 +259,48 @@ def save_vectors_file(
         if (vectors is not None and vectors.ndim == 2 and vectors.shape[0] > 0)
         else 384
     )
-    with open(p, "wb") as f:
-        np.array([num_chunks, dim], dtype=np.int32).tofile(f)
-        if num_chunks > 0:
-            np.array(chunk_ids, dtype=np.int64).tofile(f)
-            vectors.astype(np.float32).tofile(f)
+    tmp_path = p.with_name(f".{p.name}.tmp")
+    try:
+        with open(tmp_path, "wb") as f:
+            np.array([num_chunks, dim], dtype=np.int32).tofile(f)
+            if num_chunks > 0:
+                np.array(chunk_ids, dtype=np.int64).tofile(f)
+                vectors.astype(np.float32).tofile(f)
+        os.replace(tmp_path, p)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def load_vectors_file(path: Union[str, Path]) -> Tuple[np.ndarray, List[int]]:
     """Load dense float32 vector array and chunk IDs from binary file."""
     p = Path(path)
-    if not p.exists() or p.stat().st_size < 8:
+    if not p.exists():
         return np.empty((0, 384), dtype=np.float32), []
 
-    with open(p, "rb") as f:
-        header = np.fromfile(f, dtype=np.int32, count=2)
-        if len(header) < 2:
+    try:
+        if p.stat().st_size < 8:
             return np.empty((0, 384), dtype=np.float32), []
-        num_chunks, dim = int(header[0]), int(header[1])
-        if num_chunks <= 0:
-            return np.empty((0, dim), dtype=np.float32), []
 
-        chunk_ids = np.fromfile(f, dtype=np.int64, count=num_chunks).tolist()
-        vectors = np.fromfile(f, dtype=np.float32, count=num_chunks * dim).reshape(
-            (num_chunks, dim)
-        )
-        return vectors, chunk_ids
+        with open(p, "rb") as f:
+            header = np.fromfile(f, dtype=np.int32, count=2)
+            if len(header) < 2:
+                return np.empty((0, 384), dtype=np.float32), []
+            num_chunks, dim = int(header[0]), int(header[1])
+            if num_chunks <= 0:
+                return np.empty((0, dim), dtype=np.float32), []
+
+            chunk_ids = np.fromfile(f, dtype=np.int64, count=num_chunks).tolist()
+            vectors = np.fromfile(f, dtype=np.float32, count=num_chunks * dim).reshape(
+                (num_chunks, dim)
+            )
+            return vectors, chunk_ids
+    except Exception:
+        return np.empty((0, 384), dtype=np.float32), []
 
 
 class DebouncedEventHandler(FileSystemEventHandler):
@@ -349,17 +366,17 @@ class IndexWatcher:
         self.engine = engine
 
         if watch_paths is not None:
-            self.watch_paths = [Path(p) for p in watch_paths]
+            self.watch_paths = [Path(p).resolve() for p in watch_paths]
         else:
             try:
                 from hyperindex.config import get_config
 
-                self.watch_paths = [Path(p) for p in get_config().watch_paths]
+                self.watch_paths = [Path(p).resolve() for p in get_config().watch_paths]
             except Exception:
                 self.watch_paths = []
 
         if vectors_path is not None:
-            self.vectors_path: Optional[Path] = Path(vectors_path)
+            self.vectors_path: Optional[Path] = Path(vectors_path).resolve()
         else:
             self.vectors_path = None
 
@@ -417,7 +434,7 @@ class IndexWatcher:
                 continue
         return should_ignore_path(path)
 
-    def _remove_file_from_vectors(self, path: Path) -> List[int]:
+    def _remove_file_from_vectors(self, path: Union[Path, str], save: bool = True) -> List[int]:
         """Remove in-memory and persisted vectors associated with chunks of path."""
         path_str = str(path)
         conn = self.db.get_connection()
@@ -442,7 +459,7 @@ class IndexWatcher:
             self.vectors = self.vectors[keep_indices]
             self.chunk_ids = [self.chunk_ids[i] for i in keep_indices]
 
-        if self.vectors_path:
+        if save and self.vectors_path:
             save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
 
         if self.engine is not None:
@@ -450,7 +467,7 @@ class IndexWatcher:
 
         return list(old_cids)
 
-    def remove_file(self, path: Path) -> bool:
+    def remove_file(self, path: Path, save: bool = True) -> bool:
         """Remove a file from SQLite chunks, FTS5 index, and vector embeddings."""
         path_str = str(path.resolve() if path.is_absolute() else path)
         conn = self.db.get_connection()
@@ -465,11 +482,11 @@ class IndexWatcher:
         finally:
             conn.close()
 
-        self._remove_file_from_vectors(path)
+        self._remove_file_from_vectors(path_str, save=save)
         self.db.remove_file(path_str)
         return True
 
-    def remove_directory(self, dir_path: Path) -> int:
+    def remove_directory(self, dir_path: Path, save: bool = True) -> int:
         """Remove all indexed files residing within the given directory."""
         dir_str = str(dir_path.resolve() if dir_path.is_absolute() else dir_path)
         if not dir_str.endswith("/"):
@@ -496,11 +513,15 @@ class IndexWatcher:
 
         count = 0
         for p in paths:
-            if self.remove_file(p):
+            if self.remove_file(p, save=False):
                 count += 1
+
+        if save and count > 0 and self.vectors_path:
+            save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
+
         return count
 
-    def index_file(self, path: Path) -> bool:
+    def index_file(self, path: Path, save: bool = True) -> bool:
         """Index or incrementally re-index a single file into SQLite FTS5 and vector index."""
         try:
             resolved_path = path.resolve()
@@ -532,7 +553,7 @@ class IndexWatcher:
             conn.close()
 
         # Remove previous chunks & vectors before re-indexing
-        self._remove_file_from_vectors(resolved_path)
+        self._remove_file_from_vectors(path_str, save=save)
         self.db.remove_file(path_str)
 
         chunks = chunk_file(resolved_path)
@@ -568,7 +589,7 @@ class IndexWatcher:
                     self.vectors = np.vstack([self.vectors, new_vecs])
                     self.chunk_ids.extend(chunk_ids)
 
-                if self.vectors_path:
+                if save and self.vectors_path:
                     save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
 
                 if self.engine is not None:
@@ -576,7 +597,7 @@ class IndexWatcher:
 
         return True
 
-    def index_directory(self, dir_path: Path) -> int:
+    def index_directory(self, dir_path: Path, save: bool = True) -> int:
         """Recursively scan and index non-ignored files in directory. Returns count of files indexed."""
         try:
             resolved_dir = dir_path.resolve()
@@ -594,8 +615,11 @@ class IndexWatcher:
             for file_name in files:
                 file_path = root_path / file_name
                 if not self.should_ignore_path(file_path):
-                    if self.index_file(file_path):
+                    if self.index_file(file_path, save=False):
                         count += 1
+
+        if save and count > 0 and self.vectors_path:
+            save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
 
         return count
 
@@ -613,12 +637,21 @@ class IndexWatcher:
 
     def enqueue_directory_deletion(self, dir_path: Path) -> None:
         """Queue a directory deletion event."""
+        resolved_dir = dir_path.resolve() if dir_path.is_absolute() else dir_path
         with self._lock:
-            self._pending_dir_deletions[dir_path] = time.time()
-            dir_str = str(dir_path)
+            self._pending_dir_deletions[resolved_dir] = time.time()
             for p in list(self._pending_changes.keys()):
-                if str(p).startswith(dir_str):
-                    self._pending_changes.pop(p, None)
+                try:
+                    if p.is_relative_to(resolved_dir):
+                        self._pending_changes.pop(p, None)
+                except (ValueError, AttributeError):
+                    dir_str = str(resolved_dir)
+                    if not dir_str.endswith("/"):
+                        dir_prefix = dir_str + "/"
+                    else:
+                        dir_prefix = dir_str
+                    if str(p).startswith(dir_prefix):
+                        self._pending_changes.pop(p, None)
 
     def process_pending_debounced(self) -> Tuple[int, int]:
         """Process pending changes and deletions whose debounce timer has elapsed."""
@@ -645,23 +678,26 @@ class IndexWatcher:
 
         num_deleted = 0
         for dir_path in dir_deletions_to_process:
-            num_deleted += self.remove_directory(dir_path)
+            num_deleted += self.remove_directory(dir_path, save=False)
 
         for path in deletions_to_process:
-            if self.remove_file(path):
+            if self.remove_file(path, save=False):
                 num_deleted += 1
 
         num_indexed = 0
         for path in changes_to_process:
             if path.exists():
                 if path.is_file():
-                    if self.index_file(path):
+                    if self.index_file(path, save=False):
                         num_indexed += 1
                 elif path.is_dir():
-                    num_indexed += self.index_directory(path)
+                    num_indexed += self.index_directory(path, save=False)
             else:
-                if self.remove_file(path):
+                if self.remove_file(path, save=False):
                     num_deleted += 1
+
+        if (num_deleted > 0 or num_indexed > 0) and self.vectors_path:
+            save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
 
         return num_indexed, num_deleted
 
@@ -677,23 +713,26 @@ class IndexWatcher:
 
         num_deleted = 0
         for dir_path in dir_deletions_to_process:
-            num_deleted += self.remove_directory(dir_path)
+            num_deleted += self.remove_directory(dir_path, save=False)
 
         for path in deletions_to_process:
-            if self.remove_file(path):
+            if self.remove_file(path, save=False):
                 num_deleted += 1
 
         num_indexed = 0
         for path in changes_to_process:
             if path.exists():
                 if path.is_file():
-                    if self.index_file(path):
+                    if self.index_file(path, save=False):
                         num_indexed += 1
                 elif path.is_dir():
-                    num_indexed += self.index_directory(path)
+                    num_indexed += self.index_directory(path, save=False)
             else:
-                if self.remove_file(path):
+                if self.remove_file(path, save=False):
                     num_deleted += 1
+
+        if (num_deleted > 0 or num_indexed > 0) and self.vectors_path:
+            save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
 
         return num_indexed, num_deleted
 
@@ -761,7 +800,17 @@ class IndexWatcher:
         self.flush()
 
     def run(self, timeout: Optional[float] = None) -> None:
-        """Block execution running the daemon until KeyboardInterrupt or timeout."""
+        """Block execution running the daemon until KeyboardInterrupt, SIGTERM, or timeout."""
+        orig_sigterm = None
+        try:
+            def _handle_sigterm(signum, frame):
+                self.stop()
+                raise SystemExit(0)
+
+            orig_sigterm = signal.signal(signal.SIGTERM, _handle_sigterm)
+        except (ValueError, AttributeError):
+            orig_sigterm = None
+
         self.start()
         start_time = time.time()
         try:
@@ -769,10 +818,15 @@ class IndexWatcher:
                 if timeout is not None and (time.time() - start_time) >= timeout:
                     break
                 self._stop_event.wait(0.2)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SystemExit):
             pass
         finally:
             self.stop()
+            if orig_sigterm is not None:
+                try:
+                    signal.signal(signal.SIGTERM, orig_sigterm)
+                except (ValueError, AttributeError):
+                    pass
 
     def __enter__(self) -> "IndexWatcher":
         self.start()
