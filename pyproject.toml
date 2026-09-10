@@ -13,6 +13,8 @@ dependencies = [
     "rich",
     "typer",
     "watchdog",
+    "tokenizers",
+    "huggingface-hub",
 ]
 
 [project.optional-dependencies]

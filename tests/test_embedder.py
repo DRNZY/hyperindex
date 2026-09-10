@@ -116,3 +116,77 @@ def test_embedder_real_session_inference_with_pooling_and_mask():
     assert "input_ids" in feed_dict
     assert "attention_mask" in feed_dict
     assert "token_type_ids" in feed_dict
+
+
+def test_embedder_real_tokenizer_unequal_lengths():
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordPiece
+    from tokenizers.pre_tokenizers import Whitespace
+
+    # Create unpadded, untruncated tokenizer
+    vocab = {"[UNK]": 0, "[PAD]": 1, "hello": 2, "world": 3, "test": 4, "sentence": 5}
+    tok = Tokenizer(WordPiece(vocab=vocab, unk_token="[UNK]"))
+    tok.pre_tokenizer = Whitespace()
+
+    dim = 8
+    texts = ["hello", "hello world test sentence"]
+
+    mock_session = MagicMock()
+    # When embed_texts runs, session.run will receive batch of 2 with padded sequence length
+    def fake_run(output_names, feed_dict):
+        batch_size, seq_len = feed_dict["input_ids"].shape
+        # Return random embeddings of matching shape
+        return [np.ones((batch_size, seq_len, dim), dtype=np.float32)]
+
+    mock_session.run.side_effect = fake_run
+    mock_session.get_inputs.return_value = []
+    mock_session.get_providers.return_value = ["CPUExecutionProvider"]
+
+    # Embedder __init__ must auto-enable padding and truncation
+    embedder = Embedder(session=mock_session, tokenizer=tok, dim=dim)
+    res = embedder.embed_texts(texts)
+
+    assert isinstance(res, np.ndarray)
+    assert res.shape == (2, dim)
+    norms = np.linalg.norm(res, axis=1)
+    assert np.allclose(norms, [1.0, 1.0], atol=1e-4)
+
+
+def test_embedder_global_random_state_unaltered():
+    np.random.seed(12345)
+    state_before = np.random.get_state()
+
+    embedder = Embedder.create_mock_or_real(use_mock=True)
+    embedder.embed_texts(["check global rng untouched", "another string"])
+
+    state_after = np.random.get_state()
+    # Verify state array did not mutate
+    assert np.array_equal(state_before[1], state_after[1])
+
+
+def test_embedder_batching_chunks_inputs():
+    dim = 4
+    texts = [f"sample text {i}" for i in range(5)]
+
+    class MockEncoding:
+        def __init__(self, ids, mask):
+            self.ids = ids
+            self.attention_mask = mask
+
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.encode_batch.side_effect = lambda batch: [
+        MockEncoding(ids=[1, 2], mask=[1, 1]) for _ in batch
+    ]
+
+    mock_session = MagicMock()
+    mock_session.get_inputs.return_value = []
+    mock_session.run.side_effect = lambda output_names, feed: [
+        np.ones((len(feed["input_ids"]), 2, dim), dtype=np.float32)
+    ]
+
+    embedder = Embedder(session=mock_session, tokenizer=mock_tokenizer, dim=dim)
+    # Batch size 2 on 5 texts should invoke session.run 3 times (2 + 2 + 1)
+    res = embedder.embed_texts(texts, batch_size=2)
+
+    assert res.shape == (5, dim)
+    assert mock_session.run.call_count == 3

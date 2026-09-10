@@ -14,11 +14,21 @@ class Embedder:
         tokenizer: Any = None,
         dim: int = 384,
         provider: Optional[str] = None,
+        max_length: int = 512,
+        batch_size: int = 64,
     ):
         self.session = session
         self.tokenizer = tokenizer
         self.dim = dim
         self._provider = provider
+        self.max_length = max_length
+        self.batch_size = batch_size
+
+        if self.tokenizer is not None:
+            if hasattr(self.tokenizer, "enable_padding"):
+                self.tokenizer.enable_padding()
+            if hasattr(self.tokenizer, "enable_truncation"):
+                self.tokenizer.enable_truncation(max_length=self.max_length)
 
     @property
     def is_mock(self) -> bool:
@@ -134,22 +144,8 @@ class Embedder:
         )
         return dest_dir
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
-        """Generate normalized embeddings for a list of text strings.
-
-        Returns an array of shape (len(texts), dim) with float32 values normalized to unit length.
-        """
-        if not texts:
-            return np.empty((0, self.dim), dtype=np.float32)
-
-        if self.session is None or self.tokenizer is None:
-            # Deterministic pseudo-embedding for testing/mock mode
-            np.random.seed(42)
-            raw = np.random.randn(len(texts), self.dim).astype(np.float32)
-            norms = np.linalg.norm(raw, axis=1, keepdims=True)
-            return (raw / np.maximum(norms, 1e-12)).astype(np.float32)
-
-        # Real ONNX Runtime inference
+    def _embed_batch(self, texts: List[str]) -> np.ndarray:
+        """Run tokenization, inference, pooling, and normalization on a single batch."""
         encoded = self.tokenizer.encode_batch(texts)
         input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
         attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
@@ -177,3 +173,31 @@ class Embedder:
         embeddings = sum_embeddings / sum_mask
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         return (embeddings / np.maximum(norms, 1e-12)).astype(np.float32)
+
+    def embed_texts(self, texts: List[str], batch_size: Optional[int] = None) -> np.ndarray:
+        """Generate normalized embeddings for a list of text strings.
+
+        Returns an array of shape (len(texts), dim) with float32 values normalized to unit length.
+        Batches inference to avoid out-of-memory errors on large inputs.
+        """
+        if not texts:
+            return np.empty((0, self.dim), dtype=np.float32)
+
+        chunk_size = batch_size if batch_size is not None else self.batch_size
+
+        if self.session is None or self.tokenizer is None:
+            # Deterministic pseudo-embedding for testing/mock mode using isolated RNG
+            rng = np.random.default_rng(42)
+            raw = rng.standard_normal((len(texts), self.dim)).astype(np.float32)
+            norms = np.linalg.norm(raw, axis=1, keepdims=True)
+            return (raw / np.maximum(norms, 1e-12)).astype(np.float32)
+
+        # Real ONNX Runtime inference in batches
+        all_embeddings: List[np.ndarray] = []
+        for i in range(0, len(texts), chunk_size):
+            batch_texts = texts[i : i + chunk_size]
+            all_embeddings.append(self._embed_batch(batch_texts))
+
+        if len(all_embeddings) == 1:
+            return all_embeddings[0]
+        return np.vstack(all_embeddings)
