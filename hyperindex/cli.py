@@ -120,15 +120,7 @@ def index(
     db = Database(config.db_path)
     db.initialize()
     if force:
-        conn = db.get_connection()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM chunks_fts;")
-                cursor.execute("DELETE FROM chunks;")
-                cursor.execute("DELETE FROM files;")
-        finally:
-            conn.close()
+        db.clear_all()
         if config.vectors_path.exists():
             try:
                 config.vectors_path.unlink()

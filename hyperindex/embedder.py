@@ -23,6 +23,7 @@ class Embedder:
         self._provider = provider
         self.max_length = max_length
         self.batch_size = batch_size
+        self.rng = np.random.default_rng(42)
 
         if self.tokenizer is not None:
             if hasattr(self.tokenizer, "enable_padding"):
@@ -187,8 +188,7 @@ class Embedder:
 
         if self.session is None or self.tokenizer is None:
             # Deterministic pseudo-embedding for testing/mock mode using isolated RNG
-            rng = np.random.default_rng(42)
-            raw = rng.standard_normal((len(texts), self.dim)).astype(np.float32)
+            raw = self.rng.standard_normal((len(texts), self.dim)).astype(np.float32)
             norms = np.linalg.norm(raw, axis=1, keepdims=True)
             return (raw / np.maximum(norms, 1e-12)).astype(np.float32)
 

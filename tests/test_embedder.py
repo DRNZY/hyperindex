@@ -36,10 +36,14 @@ def test_embedder_preferred_providers():
 
 
 def test_embedder_mock_deterministic():
-    embedder = Embedder.create_mock_or_real(use_mock=True)
-    emb1 = embedder.embed_texts(["sample text"])
-    emb2 = embedder.embed_texts(["sample text"])
+    embedder1 = Embedder.create_mock_or_real(use_mock=True)
+    embedder2 = Embedder.create_mock_or_real(use_mock=True)
+    emb1 = embedder1.embed_texts(["sample text"])
+    emb2 = embedder2.embed_texts(["sample text"])
     np.testing.assert_array_almost_equal(emb1, emb2)
+    # Consecutive calls on same embedder advance RNG state and produce distinct vectors
+    emb3 = embedder1.embed_texts(["sample text"])
+    assert not np.allclose(emb1, emb3)
 
 
 def test_embedder_custom_dim():

@@ -136,6 +136,10 @@ def test_hybrid_search_rrf_ranking_combined(tmp_path):
     # chunk1 gets q_vec, chunk2 gets -q_vec
     vectors = np.vstack([q_vec, -q_vec])
 
+    from unittest.mock import MagicMock
+
+    embedder.embed_texts = MagicMock(return_value=np.array([q_vec]))
+
     engine = HybridSearchEngine(db, embedder, vectors=vectors, chunk_ids=chunk_ids)
     results = engine.search("authenticate", limit=5, k=60)
 

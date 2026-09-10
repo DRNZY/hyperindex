@@ -196,6 +196,28 @@ def test_cli_index_and_watch_commands():
         mock_run.assert_called_once()
 
 
+def test_cli_index_force(tmp_path, monkeypatch):
+    share_dir = tmp_path / "share"
+    config_dir = tmp_path / "config"
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("XDG_DATA_HOME", str(share_dir))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+
+    sample_dir = tmp_path / "src"
+    sample_dir.mkdir()
+    sample_file = sample_dir / "sample.py"
+    sample_file.write_text("def test_func(): pass")
+
+    res = runner.invoke(app, ["index", str(sample_dir)])
+    assert res.exit_code == 0
+
+    # Run with --force
+    res_force = runner.invoke(app, ["index", str(sample_dir), "--force"])
+    assert res_force.exit_code == 0
+    assert "Indexing completed: 1 files processed." in res_force.stdout
+
+
 def test_get_editor_command_env():
     with patch.dict(os.environ, {"EDITOR": "code -w"}):
         assert get_editor_command("/path/to/code.py", 42) == [

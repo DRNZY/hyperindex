@@ -143,3 +143,31 @@ def test_db_wal_mode_and_pragmas(tmp_path):
         assert foreign_keys == 1
     finally:
         conn.close()
+
+
+def test_db_clear_all(tmp_path):
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db.initialize()
+
+    chunk = Chunk(
+        file_path=Path("/home/test/auth.py"),
+        start_line=1,
+        end_line=10,
+        content="def get_auth_token(user_id): return 'secret-jwt'",
+        symbol="get_auth_token",
+    )
+    db.index_chunks([chunk])
+    assert len(db.get_all_chunks()) == 1
+    assert len(db.search_fts("get_auth_token")) == 1
+
+    db.clear_all()
+
+    assert len(db.get_all_chunks()) == 0
+    assert len(db.search_fts("get_auth_token")) == 0
+
+    # Verify tables can be indexed into again cleanly
+    db.index_chunks([chunk])
+    assert len(db.get_all_chunks()) == 1
+    assert len(db.search_fts("get_auth_token")) == 1
+

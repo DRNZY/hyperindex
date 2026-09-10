@@ -62,6 +62,19 @@ class Database:
         finally:
             conn.close()
 
+    def clear_all(self) -> None:
+        """Safely drop tables and recreate schema to clear all indexed data."""
+        conn = self.get_connection()
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("DROP TABLE IF EXISTS chunks_fts;")
+                cursor.execute("DROP TABLE IF EXISTS chunks;")
+                cursor.execute("DROP TABLE IF EXISTS files;")
+        finally:
+            conn.close()
+        self.initialize()
+
     def index_chunks(self, chunks: List[Chunk]) -> List[int]:
         if not chunks:
             return []
