@@ -135,14 +135,29 @@ def index(
         vectors_path=config.vectors_path,
     )
     total_indexed = 0
-    for p in target_paths:
-        target = Path(p)
-        if target.is_dir():
-            total_indexed += watcher.index_directory(target)
-        elif target.is_file():
-            if watcher.index_file(target):
-                total_indexed += 1
-    typer.echo(f"Indexing completed: {total_indexed} files processed.")
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TextColumn("[dim]{task.fields[info]}[/dim]"),
+        transient=True,
+    ) as progress:
+        task = progress.add_task("[bold cyan]Indexing files...", info="Scanning directory tree...")
+
+        def on_prog(file_path: Path, count: int):
+            progress.update(task, info=f"{count} files indexed ({file_path.name[:35]})")
+
+        for p in target_paths:
+            target = Path(p)
+            if target.is_dir():
+                total_indexed += watcher.index_directory(target, on_progress=on_prog)
+            elif target.is_file():
+                if watcher.index_file(target):
+                    total_indexed += 1
+                    on_prog(target, total_indexed)
+
+    typer.secho(f"Indexing completed: {total_indexed} files processed.", fg=typer.colors.GREEN, bold=True)
 
 
 @app.command()

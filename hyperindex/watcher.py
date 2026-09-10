@@ -7,7 +7,7 @@ from pathlib import Path
 import signal
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
 from watchdog.observers import Observer
@@ -597,7 +597,12 @@ class IndexWatcher:
 
         return True
 
-    def index_directory(self, dir_path: Path, save: bool = True) -> int:
+    def index_directory(
+        self,
+        dir_path: Path,
+        save: bool = True,
+        on_progress: Optional[Callable[[Path, int], None]] = None,
+    ) -> int:
         """Recursively scan and index non-ignored files in directory. Returns count of files indexed."""
         try:
             resolved_dir = dir_path.resolve()
@@ -617,6 +622,8 @@ class IndexWatcher:
                 if not self.should_ignore_path(file_path):
                     if self.index_file(file_path, save=False):
                         count += 1
+                    if on_progress:
+                        on_progress(file_path, count)
 
         if save and count > 0 and self.vectors_path:
             save_vectors_file(self.vectors_path, self.vectors, self.chunk_ids)
