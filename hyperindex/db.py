@@ -17,79 +17,87 @@ class Database:
         return conn
 
     def initialize(self) -> None:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path TEXT UNIQUE,
-                    mtime REAL,
-                    hash TEXT
-                );
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    file_id INTEGER,
-                    path TEXT,
-                    start_line INTEGER,
-                    end_line INTEGER,
-                    symbol TEXT,
-                    content TEXT,
-                    chunk_index INTEGER,
-                    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-                );
-                """
-            )
-            cursor.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-                    content,
-                    symbol,
-                    path,
-                    content='chunks',
-                    content_rowid='id'
-                );
-                """
-            )
-            conn.commit()
+        conn = self.get_connection()
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA journal_mode = WAL;")
+                cursor.execute("PRAGMA foreign_keys = ON;")
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS files (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        path TEXT UNIQUE,
+                        mtime REAL,
+                        hash TEXT
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS chunks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_id INTEGER,
+                        path TEXT,
+                        start_line INTEGER,
+                        end_line INTEGER,
+                        symbol TEXT,
+                        content TEXT,
+                        chunk_index INTEGER,
+                        FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+                    );
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                        content,
+                        symbol,
+                        path,
+                        content='chunks',
+                        content_rowid='id'
+                    );
+                    """
+                )
+        finally:
+            conn.close()
 
     def index_chunks(self, chunks: List[Chunk]) -> List[int]:
         if not chunks:
             return []
         chunk_ids: List[int] = []
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            for chunk in chunks:
-                cursor.execute(
-                    """
-                    INSERT INTO chunks (path, start_line, end_line, symbol, content, chunk_index)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(chunk.file_path),
-                        chunk.start_line,
-                        chunk.end_line,
-                        chunk.symbol,
-                        chunk.content,
-                        chunk.chunk_index,
-                    ),
-                )
-                chunk_id = cursor.lastrowid
-                if chunk_id is not None:
-                    chunk_ids.append(chunk_id)
+        conn = self.get_connection()
+        try:
+            with conn:
+                cursor = conn.cursor()
+                for chunk in chunks:
                     cursor.execute(
                         """
-                        INSERT INTO chunks_fts (rowid, content, symbol, path)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO chunks (path, start_line, end_line, symbol, content, chunk_index)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                        (chunk_id, chunk.content, chunk.symbol or "", str(chunk.file_path)),
+                        (
+                            str(chunk.file_path),
+                            chunk.start_line,
+                            chunk.end_line,
+                            chunk.symbol,
+                            chunk.content,
+                            chunk.chunk_index,
+                        ),
                     )
-            conn.commit()
-        return chunk_ids
+                    chunk_id = cursor.lastrowid
+                    if chunk_id is not None:
+                        chunk_ids.append(chunk_id)
+                        cursor.execute(
+                            """
+                            INSERT INTO chunks_fts (rowid, content, symbol, path)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (chunk_id, chunk.content, chunk.symbol or "", str(chunk.file_path)),
+                        )
+            return chunk_ids
+        finally:
+            conn.close()
 
     def search_fts(self, query: str, limit: int = 50) -> List[Dict[str, Any]]:
         # Clean query for FTS5
@@ -101,7 +109,8 @@ class Database:
             return []
         fts_query = " OR ".join(f'"{term}"*' for term in terms)
 
-        with self.get_connection() as conn:
+        conn = self.get_connection()
+        try:
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -119,35 +128,41 @@ class Database:
                 return [dict(row) for row in cursor.fetchall()]
             except sqlite3.OperationalError:
                 return []
+        finally:
+            conn.close()
 
     def remove_file(self, file_path: Union[Path, str]) -> None:
         path_str = str(file_path)
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, content, symbol, path FROM chunks WHERE path = ?",
-                (path_str,),
-            )
-            rows = cursor.fetchall()
-            for row in rows:
+        conn = self.get_connection()
+        try:
+            with conn:
+                cursor = conn.cursor()
                 cursor.execute(
-                    """
-                    INSERT INTO chunks_fts (chunks_fts, rowid, content, symbol, path)
-                    VALUES ('delete', ?, ?, ?, ?)
-                    """,
-                    (
-                        row["id"],
-                        row["content"],
-                        row["symbol"] or "",
-                        row["path"],
-                    ),
+                    "SELECT id, content, symbol, path FROM chunks WHERE path = ?",
+                    (path_str,),
                 )
-            cursor.execute("DELETE FROM chunks WHERE path = ?", (path_str,))
-            cursor.execute("DELETE FROM files WHERE path = ?", (path_str,))
-            conn.commit()
+                rows = cursor.fetchall()
+                for row in rows:
+                    cursor.execute(
+                        """
+                        INSERT INTO chunks_fts (chunks_fts, rowid, content, symbol, path)
+                        VALUES ('delete', ?, ?, ?, ?)
+                        """,
+                        (
+                            row["id"],
+                            row["content"],
+                            row["symbol"] or "",
+                            row["path"],
+                        ),
+                    )
+                cursor.execute("DELETE FROM chunks WHERE path = ?", (path_str,))
+                cursor.execute("DELETE FROM files WHERE path = ?", (path_str,))
+        finally:
+            conn.close()
 
     def get_all_chunks(self) -> List[Chunk]:
-        with self.get_connection() as conn:
+        conn = self.get_connection()
+        try:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -168,3 +183,5 @@ class Database:
                 )
                 for row in cursor.fetchall()
             ]
+        finally:
+            conn.close()

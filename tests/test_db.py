@@ -124,3 +124,22 @@ def test_db_nested_directory_auto_created(tmp_path):
     db = Database(nested_db_path)
     db.initialize()
     assert nested_db_path.exists()
+
+
+def test_db_wal_mode_and_pragmas(tmp_path):
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db.initialize()
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode;")
+        journal_mode = cursor.fetchone()[0]
+        assert journal_mode.lower() == "wal"
+
+        cursor.execute("PRAGMA foreign_keys;")
+        foreign_keys = cursor.fetchone()[0]
+        assert foreign_keys == 1
+    finally:
+        conn.close()
