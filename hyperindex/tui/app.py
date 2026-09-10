@@ -327,6 +327,10 @@ class HyperIndexApp(App):
             )
 
         preview.update(syntax)
+        try:
+            self.query_one("#preview-scroll", VerticalScroll).scroll_home(animate=False)
+        except Exception:
+            pass
 
     def get_current_result(self) -> Optional[SearchResult]:
         results_list = self.query_one("#results-list", ListView)

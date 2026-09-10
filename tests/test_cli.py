@@ -80,6 +80,25 @@ def test_cli_search_default_and_plain():
         assert "def verify_token" in result.stdout
 
 
+def test_cli_search_plain_flag_strips_ansi():
+    with patch("hyperindex.cli.get_engine") as mock_get_engine:
+        mock_instance = MagicMock()
+        mock_get_engine.return_value = mock_instance
+        mock_instance.search.return_value = make_sample_results()
+
+        # Run with --plain: clean text without ANSI escape sequences
+        result_plain = runner.invoke(app, ["search", "verify_token", "--plain"], color=True)
+        assert result_plain.exit_code == 0
+        assert "auth.py:15" in result_plain.stdout
+        assert "\x1b[" not in result_plain.stdout
+
+        # Run without --plain (with color enabled in terminal): contains ANSI escape sequences
+        result_color = runner.invoke(app, ["search", "verify_token"], color=True)
+        assert result_color.exit_code == 0
+        assert "auth.py:15" in result_color.stdout
+        assert "\x1b[" in result_color.stdout
+
+
 def test_cli_search_json_output():
     with patch("hyperindex.cli.HybridSearchEngine") as MockEngine:
         mock_instance = MagicMock()

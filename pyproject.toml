@@ -15,6 +15,7 @@ dependencies = [
     "watchdog",
     "tokenizers",
     "huggingface-hub",
+    "textual",
 ]
 
 [project.optional-dependencies]

@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-import sys
 from typing import Optional
 import typer
 
@@ -37,11 +36,7 @@ def search(
     tui: bool = typer.Option(False, "--tui", help="Launch interactive split-pane TUI"),
 ):
     """Perform hybrid lexical and semantic search across indexed code."""
-    config = get_config()
-    db = Database(config.db_path)
-    db.initialize()
-    embedder = Embedder.create_mock_or_real()
-    engine = HybridSearchEngine(db, embedder)
+    engine = get_engine()
 
     if tui:
         from hyperindex.tui.app import launch_tui
@@ -83,8 +78,9 @@ def search(
         sym = f" [{r.symbol}]" if r.symbol else ""
         typer.secho(
             f"{idx}. {r.path}:{r.start_line}{sym} (score: {r.score:.4f})",
-            fg=typer.colors.CYAN,
-            bold=True,
+            fg=typer.colors.CYAN if not plain else None,
+            bold=not plain,
+            color=not plain,
         )
         content_preview = r.content[:160].strip()
         typer.echo(f"   {content_preview}...\n")
