@@ -18,6 +18,9 @@ dependencies = [
     "textual",
 ]
 
+[project.scripts]
+hindex = "hyperindex.cli:app"
+
 [project.optional-dependencies]
 dev = [
     "pytest",
