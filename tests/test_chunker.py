@@ -75,6 +75,18 @@ def test_chunk_overlap():
         assert c_next.start_line <= c_curr.end_line
 
 
+def test_chunk_zero_overlap():
+    lines = [f"Line {i:02d}\n" for i in range(1, 21)]
+    text = "".join(lines)
+    chunks = chunk_code_or_text(text, file_path=Path("no_overlap.txt"), max_chars=30, overlap_lines=0)
+    assert len(chunks) > 1
+    for i in range(len(chunks) - 1):
+        c_curr = chunks[i]
+        c_next = chunks[i + 1]
+        assert c_next.start_line == c_curr.end_line + 1
+
+
+
 def test_chunk_file(tmp_path):
     p = tmp_path / "hello.py"
     p.write_text("def hello():\n    return 'world'\n", encoding="utf-8")

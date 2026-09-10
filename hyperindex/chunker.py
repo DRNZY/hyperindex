@@ -65,7 +65,7 @@ def chunk_code_or_text(
             # Retain overlap
             overlap = (
                 current_lines[-overlap_lines:]
-                if len(current_lines) > overlap_lines
+                if overlap_lines > 0 and len(current_lines) > overlap_lines
                 else []
             )
             current_lines = list(overlap)
