@@ -1,7 +1,18 @@
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import List, Optional
+
+
+@dataclass
+class SymbolInfo:
+    name: str
+    qualified_name: str
+    kind: str  # "function", "async_function", "class", "method"
+    start_line: int
+    end_line: int
+    docstring: Optional[str] = None
 
 
 @dataclass
@@ -20,6 +31,50 @@ SYMBOL_REGEX = re.compile(
     r"^\s*(def|class|function|export\s+function|export\s+const|const|struct|impl|fn)\s+([A-Za-z0-9_]+)",
     re.MULTILINE,
 )
+
+
+def extract_symbols_from_python_ast(code: str) -> List[SymbolInfo]:
+    """Extract all functions, async functions, classes, and methods using Python's AST."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    symbols: List[SymbolInfo] = []
+
+    def visit_node(node: ast.AST, parent_scope: str = ""):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind = "method" if parent_scope else ("async_function" if isinstance(child, ast.AsyncFunctionDef) else "function")
+                qual = f"{parent_scope}.{child.name}" if parent_scope else child.name
+                end_line = getattr(child, "end_lineno", child.lineno)
+                doc = ast.get_docstring(child)
+                symbols.append(SymbolInfo(
+                    name=child.name,
+                    qualified_name=qual,
+                    kind=kind,
+                    start_line=child.lineno,
+                    end_line=end_line,
+                    docstring=doc,
+                ))
+                visit_node(child, qual)
+            elif isinstance(child, ast.ClassDef):
+                qual = f"{parent_scope}.{child.name}" if parent_scope else child.name
+                end_line = getattr(child, "end_lineno", child.lineno)
+                doc = ast.get_docstring(child)
+                symbols.append(SymbolInfo(
+                    name=child.name,
+                    qualified_name=qual,
+                    kind="class",
+                    start_line=child.lineno,
+                    end_line=end_line,
+                    docstring=doc,
+                ))
+                visit_node(child, qual)
+
+    visit_node(tree)
+    symbols.sort(key=lambda s: (s.start_line, -s.end_line))
+    return symbols
 
 
 def chunk_code_or_text(

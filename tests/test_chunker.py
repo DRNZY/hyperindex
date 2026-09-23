@@ -1,6 +1,12 @@
 from pathlib import Path
 import pytest
-from hyperindex.chunker import chunk_code_or_text, chunk_file, Chunk
+from hyperindex.chunker import (
+    chunk_code_or_text,
+    chunk_file,
+    Chunk,
+    extract_symbols_from_python_ast,
+    SymbolInfo,
+)
 
 
 def test_chunking_python_code():
@@ -119,3 +125,47 @@ def test_chunk_dataclass_fields():
     assert chunk.chunk_index == 3
     assert chunk.id == 42
     assert chunk.token_count == 15
+
+
+def test_extract_symbols_from_python_ast():
+    code = (
+        "class TelemetryManager:\n"
+        "    \"\"\"Handles system metrics collection.\"\"\"\n"
+        "    def __init__(self, sample_rate: int):\n"
+        "        self.rate = sample_rate\n\n"
+        "    async def collect_metrics(self) -> dict:\n"
+        "        \"\"\"Collect active CPU and GPU telemetry.\"\"\"\n"
+        "        return {}\n\n"
+        "def helper_func():\n"
+        "    pass\n"
+    )
+    symbols = extract_symbols_from_python_ast(code)
+    assert len(symbols) == 4
+
+    class_sym = symbols[0]
+    assert class_sym.name == "TelemetryManager"
+    assert class_sym.qualified_name == "TelemetryManager"
+    assert class_sym.kind == "class"
+    assert class_sym.docstring == "Handles system metrics collection."
+
+    init_sym = symbols[1]
+    assert init_sym.name == "__init__"
+    assert init_sym.qualified_name == "TelemetryManager.__init__"
+    assert init_sym.kind == "method"
+
+    async_sym = symbols[2]
+    assert async_sym.name == "collect_metrics"
+    assert async_sym.qualified_name == "TelemetryManager.collect_metrics"
+    assert async_sym.kind == "method"
+    assert async_sym.docstring == "Collect active CPU and GPU telemetry."
+
+    helper_sym = symbols[3]
+    assert helper_sym.name == "helper_func"
+    assert helper_sym.kind == "function"
+
+
+def test_extract_symbols_syntax_error():
+    invalid_code = "def bad_syntax(:\n    pass\n"
+    symbols = extract_symbols_from_python_ast(invalid_code)
+    assert symbols == []
+
