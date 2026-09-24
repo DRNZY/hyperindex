@@ -1,6 +1,6 @@
 # HyperIndex
 
-GPU-accelerated local code and document search engine using hybrid Reciprocal Rank Fusion (SQLite FTS5 BM25 + ONNX Runtime CUDA embeddings) with an interactive terminal user interface.
+Local code and document search engine using hybrid Reciprocal Rank Fusion (SQLite FTS5 BM25 and ONNX vector embeddings) with a terminal user interface.
 
 ## Installation
 
@@ -50,7 +50,7 @@ Run the background file watcher daemon:
 hindex watch ~/Projects
 ```
 
-## Keybindings (TUI)
+## TUI keybindings
 
 - Up / Down or j / k: Navigate search results
 - Enter: Open file in editor at line ($EDITOR, code, nvim)
